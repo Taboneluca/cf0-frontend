@@ -15,6 +15,13 @@ interface Message {
     label: string
     status: 'completed' | 'active' | 'pending'
   }
+  meta?: {
+    kind: 'thinking' | 'thought-summary'
+    thoughtId: string
+    logs?: string[]
+    durationMs?: number
+    open?: boolean
+  }
 }
 
 // Reserved for future thread visualization
@@ -109,6 +116,10 @@ export function ChatInterface() {
   // Thinking duration tracking for UI labels
   const [thinkingStartedAt, setThinkingStartedAt] = useState<number | null>(null)
   const [lastThinkingDurationMs, setLastThinkingDurationMs] = useState<number | null>(null)
+  // Refs to avoid closure timing issues for thinking duration
+  const thinkingStartRef = useRef<Record<string, number>>({})
+  const currentThinkingIdRef = useRef<string | null>(null)
+  const getCurrentInsight = () => errorInsights[currentInsightIndex] || errorInsights[0]
 
   // Governance and model controls
   const [provider, setProvider] = useState<Provider>('OpenAI')
@@ -117,6 +128,7 @@ export function ChatInterface() {
   const [privacyMode, setPrivacyMode] = useState(true)
   const [showInsights, setShowInsights] = useState(true)
   const [errorInsights, setErrorInsights] = useState<ErrorInsight[]>([])
+  const [currentInsightIndex, setCurrentInsightIndex] = useState<number>(0)
   const [versions, setVersions] = useState<VersionSnapshot[]>([{ id: 'v1', label: 'Original', timestamp: new Date(0) }])
   const [activeVersionId, setActiveVersionId] = useState<string>('v1')
   interface PreviewModalState { visible: boolean; title?: string; content?: string }
@@ -304,6 +316,10 @@ export function ChatInterface() {
     // const currentInput = inputValue
     setInputValue('')
     setIsProcessing(true)
+
+    // initialize thought tracking for this cycle
+    const thoughtId = `t_${Date.now()}`
+    currentThinkingIdRef.current = thoughtId
 
     // Generate audit data for analyst mode
     if (mode === 'analyst') {
@@ -569,20 +585,25 @@ export function ChatInterface() {
 
     // Add system messages with proper sequence
     setTimeout(() => {
-      setThinkingStartedAt(Date.now())
+      const now = Date.now()
+      setThinkingStartedAt(now)
+      thinkingStartRef.current[thoughtId] = now
+      // add a dedicated thinking message that will transform into a summary
       setMessages(prev => [...prev,
         {
-          id: Date.now().toString() + '_thinking',
+          id: `${thoughtId}_msg`,
           type: 'system',
           content: 'Thinking...',
-          timestamp: new Date()
+          timestamp: new Date(),
+          meta: { kind: 'thinking', thoughtId }
         }
       ])
-    }, 500)
+    }, 400)
 
     setTimeout(() => {
-      if (thinkingStartedAt) setLastThinkingDurationMs(Date.now() - thinkingStartedAt)
-      setMessages(prev => [...prev, 
+      const start = thinkingStartRef.current[thoughtId]
+      if (start) setLastThinkingDurationMs(Date.now() - start)
+      setMessages(prev => [...prev,
         {
           id: Date.now().toString() + '_1',
           type: 'system',
@@ -593,14 +614,43 @@ export function ChatInterface() {
     }, 2000)
 
     setTimeout(() => {
-      setMessages(prev => [...prev,
-        {
-          id: Date.now().toString() + '_2',
-          type: 'system',
-          content: 'Let me make a few final adjustments to complete the green color scheme in our financial model. I\'ll enhance the title and add formatting to some key totals to make them stand out better.',
-          timestamp: new Date()
-        }
-      ])
+      // finalize thinking and then show summary AFTER proceeding to the next state
+      const end = Date.now()
+      const start = thinkingStartRef.current[thoughtId]
+      const duration = start ? end - start : 0
+      setLastThinkingDurationMs(duration)
+
+      setMessages(prev => {
+        // remove the skeleton thinking message
+        const withoutThinking = prev.filter(m => !(m.meta?.kind === 'thinking' && m.meta.thoughtId === thoughtId))
+        const now = new Date()
+        return [
+          ...withoutThinking,
+          {
+            id: Date.now().toString() + '_2',
+            type: 'system',
+            content: 'Let me make a few final adjustments to complete the green color scheme in our financial model. I\'ll enhance the title and add formatting to some key totals to make them stand out better.',
+            timestamp: now
+          },
+          {
+            id: `${thoughtId}_summary`,
+            type: 'system',
+            content: 'Thought summary',
+            timestamp: now,
+            meta: {
+              kind: 'thought-summary',
+              thoughtId,
+              durationMs: duration,
+              open: false,
+              logs: [
+                'Parsed request and identified key objectives',
+                'Built stepwise plan with financial assumptions',
+                'Validated dependencies and calculated outputs'
+              ]
+            }
+          }
+        ]
+      })
       setIsProcessing(false)
     }, 4000)
   }
@@ -650,6 +700,27 @@ export function ChatInterface() {
           </div>
           
           <div className="flex items-center gap-1">
+            {/* mini model selector */}
+            <div className="relative hidden sm:block">
+              <Button variant="outline" size="sm" className="group relative h-6 px-2 text-[10px] hover:bg-gray-50 overflow-hidden transition-colors duration-300" onClick={(e) => { e.stopPropagation(); setShowModelMenu(prev => !prev); setShowProviderMenu(false) }}>
+                <span className="pointer-events-none absolute inset-0 rounded-md" style={{ WebkitMask: 'linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)', WebkitMaskComposite: 'xor' as any, maskComposite: 'exclude' as any, padding: 1 }}>
+                  <span className="absolute -inset-1 rounded-md bg-[conic-gradient(from_0deg,rgba(16,185,129,.0),rgba(16,185,129,.65),rgba(16,185,129,.0))] animate-[spin_3.6s_linear_infinite] opacity-80 group-hover:opacity-90 transition-opacity duration-300" />
+                </span>
+                <span className="relative z-10 flex items-center">
+                  <span className="text-emerald-700 font-medium">{model}</span>
+                  <ChevronDown className="w-2.5 h-2.5 ml-1" />
+                </span>
+              </Button>
+              {showModelMenu && (
+                <div className="absolute top-full right-0 mt-1 bg-white border rounded-md shadow-md z-20 w-44 max-h-56 overflow-y-auto">
+                  {modelOptions[provider].map(m => (
+                    <button key={m} onClick={(e) => { e.stopPropagation(); setModel(m); setShowModelMenu(false) }} className={`relative w-full text-left px-2 py-1 text-[10px] hover:bg-gray-50 ${model === m ? 'text-emerald-700 font-semibold' : 'text-gray-700'}`}>
+                      {m}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <Button 
               variant="ghost" 
               size="icon"
@@ -708,6 +779,29 @@ export function ChatInterface() {
                     target.style.height = Math.min(target.scrollHeight, 112) + 'px'
                   }}
                 />
+                {/* Agent mode mini selector */}
+                <div className="absolute -top-6 left-0 flex items-center gap-1">
+                  <span className="text-[9px] text-gray-600">Mode</span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-5 px-1.5 text-[10px]"
+                    onClick={(e) => { e.stopPropagation(); setShowModeDropdown(prev => !prev) }}
+                  >
+                    {mode === 'ask' ? (
+                      <>
+                        <Sparkles className="w-3 h-3" />
+                        Ask
+                      </>
+                    ) : (
+                      <>
+                        <Wrench className="w-3 h-3" />
+                        Analyst
+                      </>
+                    )}
+                    <ChevronDown className="w-2.5 h-2.5 ml-1" />
+                  </Button>
+                </div>
                 <Button
                   onClick={handleSendMessage}
                   size="icon"
@@ -723,38 +817,7 @@ export function ChatInterface() {
         {/* Mini Mode Switcher */}
         <div className="px-3 pb-2">
           <div className="flex items-center gap-2 relative">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowModeDropdown(!showModeDropdown)}
-              className="flex items-center gap-1 text-[11px] h-6 hover:bg-gray-50"
-            >
-              {mode === 'ask' ? 'Ask' : 'Analyst'}
-              <ChevronDown className="w-2 h-2" />
-            </Button>
-            
-            {showModeDropdown && (
-              <div className="absolute top-full left-0 mt-1 bg-white border rounded-lg shadow-lg z-10 animate-in slide-in-from-top-2 duration-200">
-                <button
-                  onClick={() => {
-                    setMode('ask')
-                    setShowModeDropdown(false)
-                  }}
-                  className="block w-full px-3 py-2 text-left text-xs hover:bg-gray-50 transition-colors duration-150"
-                >
-                  Ask
-                </button>
-                <button
-                  onClick={() => {
-                    setMode('analyst')
-                    setShowModeDropdown(false)
-                  }}
-                  className="block w-full px-3 py-2 text-left text-xs hover:bg-gray-50 transition-colors duration-150"
-                >
-                  Analyst
-                </button>
-              </div>
-            )}
+            {/* move mode selector into input area; keep area for future controls */}
           </div>
         </div>
       </div>
@@ -764,7 +827,7 @@ export function ChatInterface() {
   
 
   return (
-    <div className="fixed right-0 top-0 z-40 flex h-screen max-w-[92vw] flex-col rounded-l-2xl rounded-r-none border-y border-l border-emerald-100/80 bg-white/85 backdrop-blur supports-[backdrop-filter]:bg-white/70 shadow-[0_10px_30px_-10px_rgba(16,185,129,.35)]" style={{ width: panelWidth }}>
+    <div className="fixed right-0 top-0 z-40 flex h-screen max-w-[92vw] flex-col rounded-l-2xl rounded-r-none border-y border-l border-emerald-100/80 bg-white/85 backdrop-blur supports-[backdrop-filter]:bg-white/70 shadow-[0_10px_30px_-10px_rgba(16,185,129,.35)]" style={{ width: panelWidth, ['--panel-width' as any]: panelWidth + 'px' }}>
       {/* Resize handle */}
       <div onMouseDown={handleResizeMouseDown} className="absolute left-0 top-0 h-full w-2 cursor-col-resize rounded-l-2xl">
         <div className="absolute inset-y-0 left-[-1px] w-[3px] rounded-full bg-gradient-to-b from-emerald-300/50 via-emerald-400/60 to-emerald-300/50 opacity-0 hover:opacity-100 transition-opacity" />
@@ -783,15 +846,26 @@ export function ChatInterface() {
         {/* Tiny model selector */}
         <div className="hidden md:flex items-center gap-2">
           <div className="relative">
-            <Button variant="outline" size="sm" className="h-7 px-2 text-[11px] hover:bg-gray-50" onClick={() => { setShowModelMenu(prev => !prev); setShowProviderMenu(false) }}>
-              {model}
-              <ChevronDown className="w-3 h-3 ml-1" />
+            <Button variant="outline" size="sm" className="group relative h-6 px-2 text-[10px] hover:bg-gray-50 overflow-hidden transition-colors duration-300" onClick={() => { setShowModelMenu(prev => !prev); setShowProviderMenu(false) }}>
+              {/* animated glow ring */}
+              <span className="pointer-events-none absolute inset-0 rounded-md" style={{ WebkitMask: 'linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)', WebkitMaskComposite: 'xor' as any, maskComposite: 'exclude' as any, padding: 1 }}>
+                <span className="absolute -inset-1 rounded-md bg-[conic-gradient(from_0deg,rgba(16,185,129,.0),rgba(16,185,129,.7),rgba(16,185,129,.0))] animate-[spin_3.5s_linear_infinite] opacity-80 group-hover:opacity-90 transition-opacity duration-300" />
+              </span>
+              <span className="relative z-10 flex items-center">
+                <span className="text-emerald-700 font-medium">{model}</span>
+                <ChevronDown className="w-2.5 h-2.5 ml-1" />
+              </span>
             </Button>
             {showModelMenu && (
-              <div className="absolute top-full left-0 mt-1 bg-white border rounded-lg shadow-md z-20 w-48 max-h-56 overflow-y-auto">
+              <div className="absolute top-full left-0 mt-1 bg-white border rounded-md shadow-md z-20 w-48 max-h-56 overflow-y-auto">
                 {modelOptions[provider].map(m => (
-                  <button key={m} onClick={() => { setModel(m); setShowModelMenu(false) }} className={`block w-full text-left px-3 py-1.5 text-[11px] hover:bg-gray-50 ${model === m ? 'text-green-700' : 'text-gray-700'}`}>
-                    {m}
+                  <button key={m} onClick={() => { setModel(m); setShowModelMenu(false) }} className={`relative w-full text-left px-2 py-1 text-[10px] hover:bg-gray-50 ${model === m ? 'text-emerald-700 font-semibold' : 'text-gray-700'}`}>
+                    <span className="relative">
+                      {m}
+                      {model === m && (
+                        <span className="pointer-events-none absolute -inset-1 rounded bg-emerald-200/25 blur-[6px]" />
+                      )}
+                    </span>
                   </button>
                 ))}
               </div>
@@ -857,9 +931,9 @@ export function ChatInterface() {
             size="icon"
             onClick={() => setShowInsights(!showInsights)}
             title="Insights"
-            className={`size-7 hover:bg-yellow-50 transition-colors duration-150 ${showInsights ? 'text-yellow-700' : 'text-gray-700'}`}
+            className={`group size-7 transition-transform duration-150 hover:translate-y-[-1px] active:translate-y-0 hover:bg-emerald-50 ${showInsights ? 'text-emerald-700 bg-emerald-50' : 'text-gray-700'}`}
           >
-            <Bug className="w-3.5 h-3.5" />
+            <Bug className="draw-on-hover w-3.5 h-3.5" />
           </Button>
           <Button 
             variant="ghost" 
@@ -931,14 +1005,21 @@ export function ChatInterface() {
                 {messages.map((message) => (
                   <div key={message.id} className="space-y-2">
                     {message.type === 'user' ? (
-                      <div className="flex justify-start mb-4 group">
-                        <div className="flex items-start gap-2 max-w-[70%]">
-                          <div className="w-6 h-6 rounded-full bg-gray-200 flex items-center justify-center text-[9px] text-gray-600">U</div>
-                          <div className="px-3 py-2 rounded-lg bg-emerald-600/95 text-white shadow-xs animate-in slide-in-from-left-2 duration-200 text-[13px] leading-5">
-                            {message.content}
+                      <div className="flex justify-end mb-4 group">
+                        <div className="flex items-start gap-2 max-w-[72%]">
+                          {/* no bubble background — use underline card style */}
+                          <div className="relative px-0 py-0 text-[13px] leading-6 text-gray-900">
+                            <div className="relative">
+                              <div className="absolute -inset-x-1 -bottom-1 h-[2px] bg-emerald-400/70 rounded-full blur-[1px]" />
+                              <div className="absolute -inset-x-1 -bottom-[6px] h-[1px] bg-emerald-200/80" />
+                              <span className="bg-gradient-to-r from-gray-900 to-gray-700 bg-clip-text text-transparent font-medium">
+                                {message.content}
+                              </span>
+                            </div>
                           </div>
+                          <div className="w-6 h-6 rounded-full bg-gray-900 text-white flex items-center justify-center text-[9px]">U</div>
                         </div>
-                        <div className="opacity-0 group-hover:opacity-100 transition-opacity ml-2 flex items-center gap-1.5">
+                        <div className="opacity-0 group-hover:opacity-100 transition-opacity mr-2 flex items-center gap-1.5">
                           <button className="text-gray-400 hover:text-gray-700" title="Copy"><Copy className="w-3 h-3" /></button>
                           <button className="text-gray-400 hover:text-gray-700" title="Pin"><Pin className="w-3 h-3" /></button>
                         </div>
@@ -963,13 +1044,39 @@ export function ChatInterface() {
                         </div>
                         <div className="flex items-start gap-2 max-w-[72%]">
                           <div className="w-6 h-6 rounded-full bg-black text-white flex items-center justify-center text-[9px]">AI</div>
-                          {message.content === 'Thinking...' ? (
+                          {message.meta?.kind === 'thinking' ? (
                             <div className="bg-gray-100 p-2.5 rounded-lg border border-gray-200 max-w-md">
                               <div className="animate-pulse space-y-2">
                                 <div className="h-2.5 bg-gray-200 rounded w-2/3" />
                                 <div className="h-2.5 bg-gray-200 rounded w-4/5" />
                                 <div className="h-2.5 bg-gray-200 rounded w-3/5" />
                               </div>
+                            </div>
+                          ) : message.meta?.kind === 'thought-summary' ? (
+                            <div className="px-3 py-2 rounded-lg border border-emerald-200 bg-emerald-50/70 max-w-md text-[13px] leading-5 text-gray-800 w-full">
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2 text-emerald-700">
+                                  <Brain className="w-3.5 h-3.5" />
+                                  <span>Thought for {(message.meta.durationMs ? (message.meta.durationMs/1000).toFixed(1) : '0.0')}s</span>
+                                </div>
+                                <button
+                                  className="text-gray-600 hover:text-gray-900 text-xs flex items-center gap-1"
+                                  onClick={() => setMessages(prev => prev.map(m => m.id === message.id ? { ...m, meta: { ...m.meta!, open: !m.meta?.open } } : m))}
+                                >
+                                  {message.meta.open ? 'Hide' : 'Show'}
+                                  <ChevronDown className={`w-3 h-3 transition-transform ${message.meta.open ? 'rotate-180' : ''}`} />
+                                </button>
+                              </div>
+                              {message.meta.open && (
+                                <div className="mt-2 text-[12px] text-gray-700 space-y-1">
+                                  {message.meta.logs?.map((log, i) => (
+                                    <div key={i} className="flex items-start gap-2">
+                                      <span className="mt-[3px] w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                                      <span>{log}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
                             </div>
                           ) : (
                             <div className="px-3 py-2 rounded-lg border border-emerald-200 bg-emerald-50/70 max-w-md text-[13px] leading-5 text-gray-800">
@@ -1224,50 +1331,48 @@ export function ChatInterface() {
 
           {/* Right insights panel */}
           {showInsights && (
-            <div className="w-80 border-l bg-white h-full flex flex-col">
-              <div className="px-3 py-2 border-b flex items-center justify-between">
+            <div className="pointer-events-auto fixed right-[calc(var(--panel-width,320px)+12px)] bottom-4 z-50 w-[360px] max-w-[90vw] rounded-xl border border-yellow-200 bg-white shadow-[0_10px_30px_-10px_rgba(234,179,8,.35)] animate-in slide-in-from-right-4 duration-300">
+              <div className="px-3 py-2 border-b flex items-center justify-between rounded-t-xl bg-yellow-50/60">
                 <div className="flex items-center gap-2">
                   <Bug className="w-4 h-4 text-yellow-600" />
-                  <span className="text-sm font-medium">Error Insights</span>
+                  <span className="text-sm font-medium">Insights</span>
                 </div>
-                <Button variant="ghost" size="icon" onClick={() => setShowInsights(false)} className="h-7 w-7">
-                  <X className="w-4 h-4" />
-                </Button>
+                <Button variant="ghost" size="icon" onClick={() => setShowInsights(false)} className="h-7 w-7"><X className="w-4 h-4" /></Button>
               </div>
-              <div className="p-3 flex items-center gap-2 border-b">
-                <Button variant="outline" size="sm" onClick={scanForErrors} className="flex items-center gap-2">
-                  <Rocket className="w-3 h-3" /> Scan workbook
-                </Button>
-                <Button variant="ghost" size="sm" onClick={() => setErrorInsights([])}>Clear</Button>
+              <div className="px-3 py-2 flex items-center justify-between">
+                <Button variant="outline" size="sm" onClick={scanForErrors} className="flex items-center gap-2"><Rocket className="w-3 h-3" /> Scan</Button>
+                <div className="flex items-center gap-2">
+                  <Button variant="ghost" size="icon" onClick={() => setCurrentInsightIndex(i => Math.max(0, i-1))} className="h-7 w-7">⟨</Button>
+                  <Button variant="ghost" size="icon" onClick={() => setCurrentInsightIndex(i => Math.min((errorInsights.length-1), i+1))} className="h-7 w-7">⟩</Button>
+                </div>
               </div>
-              <div className="flex-1 overflow-y-auto p-3 space-y-2">
-                {errorInsights.length === 0 ? (
+              <div className="p-3">
+                {(errorInsights.length === 0) ? (
                   <div className="text-xs text-gray-500">No issues detected yet.</div>
                 ) : (
-                  errorInsights.map(ins => (
-                    <div key={ins.id} className={`border rounded p-2 text-xs ${
+                  (() => {
+                  const ins = getCurrentInsight();
+                  return (
+                    <div className={`border rounded p-2 text-xs ${
                       ins.status === 'applied' ? 'bg-green-50 border-green-200' :
                       ins.status === 'ignored' ? 'bg-gray-50 border-gray-200' :
                       ins.severity === 'high' ? 'bg-red-50 border-red-200' : ins.severity === 'medium' ? 'bg-yellow-50 border-yellow-200' : 'bg-white border-gray-200'
                     }`}>
-                      <div className="flex items-start justify-between gap-2">
-                        <div>
-                          <div className="font-medium text-gray-800 flex items-center gap-1">
-                            {ins.severity === 'high' ? <AlertTriangle className="w-3 h-3 text-red-600" /> : ins.severity === 'medium' ? <AlertTriangle className="w-3 h-3 text-yellow-600" /> : <CheckCircle2 className="w-3 h-3 text-green-600" />}
-                            {ins.title}
-                          </div>
-                          <div className="text-gray-600 mt-1">{ins.description}</div>
-                          <div className="text-gray-500 mt-1">Range: <span className="font-mono bg-gray-100 px-1 rounded">{ins.cellRange}</span></div>
-                          <div className="text-gray-700 mt-1">Fix: {ins.suggestion}</div>
-                        </div>
-                        <div className="flex flex-col gap-1 items-end">
-                          <Button variant="ghost" size="sm" className="h-6 px-2" onClick={() => setShowPreviewModal({visible: true, title: 'Fix Preview', content: ins.suggestion})}>Preview</Button>
-                          <Button variant="ghost" size="sm" className="h-6 px-2 text-green-700 hover:bg-green-50" onClick={() => applyInsight(ins.id)} disabled={ins.status !== 'pending'}>Apply</Button>
-                          <Button variant="ghost" size="sm" className="h-6 px-2 text-gray-600 hover:bg-gray-50" onClick={() => ignoreInsight(ins.id)} disabled={ins.status !== 'pending'}>Ignore</Button>
-                        </div>
+                      <div className="font-medium text-gray-800 flex items-center gap-1">
+                        {ins.severity === 'high' ? <AlertTriangle className="w-3 h-3 text-red-600" /> : ins.severity === 'medium' ? <AlertTriangle className="w-3 h-3 text-yellow-600" /> : <CheckCircle2 className="w-3 h-3 text-green-600" />}
+                        {ins.title}
+                      </div>
+                      <div className="text-gray-600 mt-1">{ins.description}</div>
+                      <div className="text-gray-500 mt-1">Range: <span className="font-mono bg-gray-100 px-1 rounded">{ins.cellRange}</span></div>
+                      <div className="text-gray-700 mt-1">Fix: {ins.suggestion}</div>
+                      <div className="mt-2 flex items-center justify-end gap-1">
+                        <Button variant="ghost" size="sm" className="h-6 px-2" onClick={() => setShowPreviewModal({visible: true, title: 'Fix Preview', content: ins.suggestion})}>Preview</Button>
+                        <Button variant="ghost" size="sm" className="h-6 px-2 text-green-700 hover:bg-green-50" onClick={() => applyInsight(ins.id)} disabled={ins.status !== 'pending'}>Apply</Button>
+                        <Button variant="ghost" size="sm" className="h-6 px-2 text-gray-600 hover:bg-gray-50" onClick={() => ignoreInsight(ins.id)} disabled={ins.status !== 'pending'}>Ignore</Button>
                       </div>
                     </div>
-                  ))
+                    );
+                  })()
                 )}
               </div>
             </div>
@@ -1281,20 +1386,20 @@ export function ChatInterface() {
         <div className="flex items-center gap-2 mb-3">
           {/* Attach menu trigger */}
           <div className="relative">
-            <Button variant="ghost" size="icon" className="size-7 hover:bg-gray-100 transition-all duration-150" onClick={() => setShowSourcesDropdown(!showSourcesDropdown)}>
-              <AtSign className="w-3.5 h-3.5" />
+            <Button variant="ghost" size="icon" className="group size-6 hover:bg-emerald-50 text-emerald-700 transition-all duration-150" onClick={() => setShowSourcesDropdown(!showSourcesDropdown)} title="Attach (@)">
+              <AtSign className="draw-on-hover w-3 h-3" />
             </Button>
             {uploadedFiles.length > 0 && (
               <span className="absolute -top-1 -right-1 bg-blue-500 text-white text-[10px] rounded-full w-4 h-4 flex items-center justify-center">{uploadedFiles.length}</span>
             )}
             {showSourcesDropdown && (
-              <div className="absolute top-full left-0 mt-1 bg-white border rounded-md shadow-md z-10 w-48 animate-in fade-in duration-150">
-                <div className="py-1 text-[12px]">
-                  <button className="w-full text-left px-3 py-1.5 hover:bg-gray-50 flex items-center gap-2" onClick={() => fileInputRef.current?.click()}>
-                    <File className="w-3.5 h-3.5" /> External
+              <div className="absolute top-full left-0 mt-1 bg-white border border-emerald-200 rounded-md shadow-md z-10 w-40 animate-in fade-in duration-150">
+                <div className="py-1 text-[10px]">
+                  <button className="w-full text-left px-2 py-1 hover:bg-emerald-50 flex items-center gap-1.5 text-emerald-700" onClick={() => fileInputRef.current?.click()}>
+                    <File className="draw-on-hover w-3 h-3" /> External
                   </button>
-                  <button className="w-full text-left px-3 py-1.5 hover:bg-gray-50 flex items-center gap-2" onClick={addMockRange}>
-                    <BoxSelect className="w-3.5 h-3.5" /> Range
+                  <button className="w-full text-left px-2 py-1 hover:bg-emerald-50 flex items-center gap-1.5 text-emerald-700" onClick={addMockRange}>
+                    <BoxSelect className="draw-on-hover w-3 h-3" /> Range
                   </button>
                   <input ref={fileInputRef} type="file" multiple onChange={handleFileUpload} className="hidden" accept=".xlsx,.xls,.csv,.txt,.pdf" />
                 </div>
@@ -1319,21 +1424,33 @@ export function ChatInterface() {
               variant="outline"
               size="sm"
               onClick={() => setShowModeDropdown(!showModeDropdown)}
-              className="flex items-center gap-1 hover:translate-y-[-1px] transition-all duration-200"
+              className="group flex items-center gap-1.5 h-6 px-2 text-[10px] hover:translate-y-[-1px] transition-all duration-200 border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+              title="Agent mode"
             >
-              {mode === 'ask' ? 'Ask' : 'Analyst'}
+              {mode === 'ask' ? (
+                <>
+                  <Sparkles className="draw-on-hover w-3 h-3" />
+                  <span className="group-hover:text-emerald-700">Ask</span>
+                </>
+              ) : (
+                <>
+                  <Wrench className="draw-on-hover w-3 h-3" />
+                  <span className="group-hover:text-emerald-700">Analyst</span>
+                </>
+              )}
               <ChevronDown className="w-3 h-3" />
             </Button>
             
             {showModeDropdown && (
-              <div className="absolute top-full right-0 mt-1 bg-white border rounded-lg shadow-lg z-10 animate-in slide-in-from-top-2 duration-200">
+              <div className="absolute top-full right-0 mt-1 bg-white border rounded-md shadow-md z-10 animate-in slide-in-from-top-2 duration-200 w-36">
                 <button
                   onClick={() => {
                     setMode('ask')
                     setShowModeDropdown(false)
                   }}
-                  className="block w-full px-3 py-2 text-left text-sm hover:bg-gray-50 transition-colors duration-150"
+                  className="flex w-full items-center gap-1.5 px-2 py-1 text-left text-[10px] hover:bg-gray-50 transition-colors duration-150"
                 >
+                  <Sparkles className="w-3 h-3" />
                   Ask
                 </button>
                 <button
@@ -1341,8 +1458,9 @@ export function ChatInterface() {
                     setMode('analyst')
                     setShowModeDropdown(false)
                   }}
-                  className="block w-full px-3 py-2 text-left text-sm hover:bg-gray-50 transition-colors duration-150"
+                  className="flex w-full items-center gap-1.5 px-2 py-1 text-left text-[10px] hover:bg-gray-50 transition-colors duration-150"
                 >
+                  <Wrench className="w-3 h-3" />
                   Analyst
                 </button>
               </div>
@@ -1351,24 +1469,25 @@ export function ChatInterface() {
         </div>
 
         <div className="flex items-end gap-3">
-          <div className="group relative flex-1">
-            <div className="pointer-events-none absolute -inset-[3px] rounded-[16px] p-[3px] opacity-90 transition-opacity duration-300 group-focus-within:opacity-100">
-              <div className="absolute inset-0 rounded-[inherit] overflow-hidden">
-                <div className="absolute inset-0 animate-[spin_14s_linear_infinite] will-change-transform">
-                  <span className="absolute left-1/2 top-0 -translate-x-1/2 -translate-y-1/2 w-6 h-6 rounded-full bg-emerald-400/90 shadow-[0_0_20px_8px_rgba(16,185,129,.45)]" />
-                  <span className="absolute left-0 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[18px] h-[18px] rounded-full bg-emerald-300/80 shadow-[0_0_16px_6px_rgba(16,185,129,.35)]" />
-                  <span className="absolute left-1/2 bottom-0 -translate-x-1/2 translate-y-1/2 w-5 h-5 rounded-full bg-emerald-500/80 shadow-[0_0_18px_7px_rgba(16,185,129,.4)]" />
-                  <span className="absolute right-0 top-1/2 translate-x-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-emerald-300/70 shadow-[0_0_14px_6px_rgba(16,185,129,.3)]" />
+            <div className="group relative flex-1">
+              {/* morphing blob instead of clipped orbs */}
+              <div className="pointer-events-none absolute -inset-[4px] rounded-[18px] p-[4px] opacity-80 transition-opacity duration-500 group-focus-within:opacity-95">
+                <div className="absolute inset-0 rounded-[inherit] overflow-hidden">
+                  <div className="absolute inset-[-10%] rounded-[inherit] bg-[radial-gradient(40%_60%_at_50%_50%,rgba(16,185,129,.22),transparent_60%)] animate-[blob_10s_ease-in-out_infinite]" />
+                  <div className="absolute inset-[-20%] rounded-[inherit] bg-[conic-gradient(from_0deg,rgba(16,185,129,.0),rgba(16,185,129,.4),rgba(16,185,129,.0))] animate-[spin_8s_linear_infinite,glowPulse_3.2s_ease-in-out_infinite]" />
                 </div>
               </div>
-            </div>
-            <div className="relative rounded-xl border border-emerald-300/70 bg-white/90 backdrop-blur-sm flex items-end">
+              <div className="relative rounded-xl border border-emerald-300/70 bg-white/90 backdrop-blur-sm flex items-end overflow-hidden">
+                {/* continuous border shimmer */}
+                <div className="pointer-events-none absolute -inset-[1px] rounded-[inherit]" style={{ WebkitMask: 'linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)', WebkitMaskComposite: 'xor' as any, maskComposite: 'exclude' as any, padding: 1 }}>
+                  <div className="absolute -inset-1 rounded-[inherit] bg-[conic-gradient(from_0deg,transparent,rgba(16,185,129,.4),transparent)] animate-[spin_6s_linear_infinite]" />
+                </div>
               <textarea
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               placeholder="Tell cf0 AI what to build..."
-              className="flex-1 bg-transparent border-none focus:outline-none focus:ring-0 px-3 py-2 text-sm resize-none min-h-[48px] max-h-40 overflow-y-auto transition-all duration-200 placeholder:text-gray-400"
-              onKeyPress={(e) => {
+                  className="flex-1 bg-transparent border-none focus:outline-none focus:ring-0 px-3 py-2 text-sm resize-none min-h-[48px] max-h-40 overflow-y-auto placeholder:text-gray-400 focus:shadow-[0_0_0_2px_rgba(16,185,129,0.16)_inset] transition-[box-shadow] duration-500"
+              onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault()
                   handleSendMessage()
@@ -1389,10 +1508,19 @@ export function ChatInterface() {
             <Button
               onClick={handleSendMessage}
               size="icon"
-              className="m-1 h-9 w-9 bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-600/90 hover:to-emerald-500/90 text-white flex-shrink-0 hover:translate-y-[-1px] transition-all duration-200 shadow-sm"
+              className="relative m-1 h-9 w-9 bg-gradient-to-r from-emerald-600 to-emerald-500 text-white flex-shrink-0 transition-all duration-300 hover:translate-y-[-1px] hover:shadow-[0_12px_28px_-10px_rgba(16,185,129,.65)] active:scale-[0.98]"
               disabled={!inputValue.trim() || isProcessing}
+              aria-label="Send message"
             >
-              <Send className="w-4 h-4" />
+              {/* animated accent ring */}
+              <span className="pointer-events-none absolute -inset-[2px] rounded-[10px] opacity-80" style={{ WebkitMask: 'linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)', WebkitMaskComposite: 'xor' as any, maskComposite: 'exclude' as any, padding: 2 }}>
+                <span className={`absolute -inset-1 rounded-[inherit] bg-[conic-gradient(from_0deg,rgba(16,185,129,.0),rgba(16,185,129,1),rgba(16,185,129,.0))] ${(!inputValue.trim() || isProcessing) ? '' : 'animate-[spin_2.2s_linear_infinite]'}`} />
+              </span>
+              {/* ripple/microinteraction */}
+              <span className="pointer-events-none absolute inset-0 rounded-[inherit] overflow-hidden">
+                <span className={`absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 size-0 rounded-full bg-white/40 transition-all duration-500 ${(!inputValue.trim() || isProcessing) ? 'opacity-0' : 'group-[button]:active:size-[120%]'}`} />
+              </span>
+              {isProcessing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
             </Button>
             </div>
           </div>
