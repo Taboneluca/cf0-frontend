@@ -1,10 +1,12 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
+import Image from 'next/image'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Minimize2, X, MessageSquare, Settings, BarChart3, User, Plus, Send, FileText, ChevronDown, Type, Maximize2, Upload, File, Shield, PlayCircle, Undo2, Bug, AlertTriangle, CheckCircle2, Lock, Rocket, Link2, Globe, Copy, Pin, Sparkles, AtSign, Loader2, Wrench, Brain, BoxSelect, Timer } from 'lucide-react'
+import invertedLogo from '@/docs/inverted_logo.png'
 
 interface Message {
   id: string
@@ -136,6 +138,7 @@ export function ChatInterface() {
   const [sourceUrl, setSourceUrl] = useState('')
   const [showProviderMenu, setShowProviderMenu] = useState(false)
   const [showModelMenu, setShowModelMenu] = useState(false)
+  const [sourceMenuOrigin, setSourceMenuOrigin] = useState<'button' | 'inline' | null>(null)
   const providerOptions: Provider[] = ['OpenAI', 'Anthropic']
   const modelOptions: Record<Provider, Model[]> = {
     OpenAI: ['gpt-4o-mini', 'gpt-4.1'],
@@ -614,42 +617,47 @@ export function ChatInterface() {
     }, 2000)
 
     setTimeout(() => {
-      // finalize thinking and then show summary AFTER proceeding to the next state
+      // finalize thinking and replace the inline thinking box with the summary (do not append at bottom)
       const end = Date.now()
       const start = thinkingStartRef.current[thoughtId]
       const duration = start ? end - start : 0
       setLastThinkingDurationMs(duration)
 
       setMessages(prev => {
-        // remove the skeleton thinking message
-        const withoutThinking = prev.filter(m => !(m.meta?.kind === 'thinking' && m.meta.thoughtId === thoughtId))
         const now = new Date()
-        return [
-          ...withoutThinking,
-          {
-            id: Date.now().toString() + '_2',
-            type: 'system',
-            content: 'Let me make a few final adjustments to complete the green color scheme in our financial model. I\'ll enhance the title and add formatting to some key totals to make them stand out better.',
-            timestamp: now
-          },
-          {
-            id: `${thoughtId}_summary`,
-            type: 'system',
-            content: 'Thought summary',
-            timestamp: now,
-            meta: {
-              kind: 'thought-summary',
-              thoughtId,
-              durationMs: duration,
-              open: false,
-              logs: [
-                'Parsed request and identified key objectives',
-                'Built stepwise plan with financial assumptions',
-                'Validated dependencies and calculated outputs'
-              ]
-            }
+        const next = [...prev]
+        const idx = next.findIndex(m => m.meta?.kind === 'thinking' && m.meta.thoughtId === thoughtId)
+        const summaryMessage = {
+          id: `${thoughtId}_summary`,
+          type: 'system' as const,
+          content: 'Thought summary',
+          timestamp: now,
+          meta: {
+            kind: 'thought-summary' as const,
+            thoughtId,
+            durationMs: duration,
+            open: false,
+            logs: [
+              'Parsed request and identified key objectives',
+              'Built stepwise plan with financial assumptions',
+              'Validated dependencies and calculated outputs'
+            ]
           }
-        ]
+        }
+        if (idx !== -1) {
+          next[idx] = summaryMessage
+        } else {
+          // fallback: insert before final message if thinking not found
+          next.push(summaryMessage)
+        }
+        // append the final assistant content message
+        next.push({
+          id: Date.now().toString() + '_2',
+          type: 'system' as const,
+          content: 'Let me make a few final adjustments to complete the green color scheme in our financial model. I\'ll enhance the title and add formatting to some key totals to make them stand out better.',
+          timestamp: now
+        })
+        return next
       })
       setIsProcessing(false)
     }, 4000)
@@ -692,16 +700,14 @@ export function ChatInterface() {
       >
         {/* Mini Header */}
         <div className="flex items-center justify-between px-3 py-2 border-b bg-transparent rounded-t-xl">
-          <div className="flex items-center gap-2">
-            <div className="w-5 h-5 bg-black rounded flex items-center justify-center">
-              <span className="text-white text-[10px] font-bold">cf0</span>
+            <div className="flex items-center gap-2 relative z-10">
+              <Image src={invertedLogo} alt="cf0" width={26} height={26} className="rounded" />
+              <span className="text-[11px] font-medium text-gray-800 select-none">cf0.ai</span>
             </div>
-            <span className="text-[12px] font-medium">AI</span>
-          </div>
           
           <div className="flex items-center gap-1">
-            {/* mini model selector */}
-            <div className="relative hidden sm:block">
+            {/* mini inline selectors: model + agent in one row */}
+            <div className="relative hidden sm:block z-10">
               <Button variant="outline" size="sm" className="group relative h-6 px-2 text-[10px] hover:bg-gray-50 overflow-hidden transition-colors duration-300" onClick={(e) => { e.stopPropagation(); setShowModelMenu(prev => !prev); setShowProviderMenu(false) }}>
                 <span className="pointer-events-none absolute inset-0 rounded-md" style={{ WebkitMask: 'linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)', WebkitMaskComposite: 'xor' as any, maskComposite: 'exclude' as any, padding: 1 }}>
                   <span className="absolute -inset-1 rounded-md bg-[conic-gradient(from_0deg,rgba(16,185,129,.0),rgba(16,185,129,.65),rgba(16,185,129,.0))] animate-[spin_3.6s_linear_infinite] opacity-80 group-hover:opacity-90 transition-opacity duration-300" />
@@ -718,6 +724,30 @@ export function ChatInterface() {
                       {m}
                     </button>
                   ))}
+                </div>
+              )}
+            </div>
+            <div className="relative hidden sm:block z-10">
+              <Button variant="outline" size="sm" className="group relative h-6 px-2 text-[10px] hover:bg-gray-50 overflow-hidden transition-colors duration-300 ml-1" onClick={(e) => { e.stopPropagation(); setShowModeDropdown(prev => !prev) }}>
+                {mode === 'ask' ? (<><Sparkles className="w-3 h-3 mr-1"/>Ask</>) : (<><Wrench className="w-3 h-3 mr-1"/>Analyst</>)}
+                <ChevronDown className="w-2.5 h-2.5 ml-1" />
+              </Button>
+              {showModeDropdown && (
+                <div className="absolute top-full right-0 mt-1 bg-white border rounded-md shadow-md z-20 w-40 animate-in slide-in-from-top-2 duration-200">
+                  <button onClick={(e) => { e.stopPropagation(); setMode('ask'); setShowModeDropdown(false) }} className={`relative flex w-full items-center gap-1.5 px-2 py-1 text-left text-[10px] hover:bg-gray-50 transition-colors duration-150 ${mode === 'ask' ? 'text-emerald-700 font-semibold' : 'text-gray-700'}`}>
+                    <span className="relative">
+                      <Sparkles className="w-3 h-3" />
+                      {mode === 'ask' && <span className="pointer-events-none absolute -inset-1 rounded bg-emerald-200/25 blur-[6px]" />}
+                    </span>
+                    Ask
+                  </button>
+                  <button onClick={(e) => { e.stopPropagation(); setMode('analyst'); setShowModeDropdown(false) }} className={`relative flex w-full items-center gap-1.5 px-2 py-1 text-left text-[10px] hover:bg-gray-50 transition-colors duration-150 ${mode === 'analyst' ? 'text-emerald-700 font-semibold' : 'text-gray-700'}`}>
+                    <span className="relative">
+                      <Wrench className="w-3 h-3" />
+                      {mode === 'analyst' && <span className="pointer-events-none absolute -inset-1 rounded bg-emerald-200/25 blur-[6px]" />}
+                    </span>
+                    Analyst
+                  </button>
                 </div>
               )}
             </div>
@@ -739,32 +769,32 @@ export function ChatInterface() {
           </div>
         </div>
 
-        {/* Mini Input Area with beam */}
+        {/* Mini Input Area */}
         <div className="p-2.5">
           <div className="flex items-end gap-2">
             <div className="group relative flex-1">
-              <div
-                className="pointer-events-none absolute -inset-[3px] rounded-[14px] p-[3px] opacity-80 transition-opacity duration-300 group-focus-within:opacity-100"
-                style={{
-                  WebkitMask: 'linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)',
-                  WebkitMaskComposite: 'xor' as any,
-                  maskComposite: 'exclude' as any,
-                }}
-              >
+              {/* Match full-view morphing blob + glow */}
+              <div className="pointer-events-none absolute -inset-[4px] rounded-[18px] p-[4px] opacity-80 transition-opacity duration-500 group-focus-within:opacity-95">
                 <div className="absolute inset-0 rounded-[inherit] overflow-hidden">
-                  <div className="absolute inset-0 animate-[spin_12s_linear_infinite] will-change-transform">
-                    <span className="absolute left-1/2 top-0 -translate-x-1/2 -translate-y-1/2 w-5 h-5 rounded-full bg-emerald-400/90 shadow-[0_0_16px_6px_rgba(16,185,129,.45)]" />
-                    <span className="absolute left-1/2 bottom-0 -translate-x-1/2 translate-y-1/2 w-4 h-4 rounded-full bg-emerald-300/80 shadow-[0_0_12px_5px_rgba(16,185,129,.35)]" />
-                  </div>
+                  <div className="absolute inset-[-10%] rounded-[inherit] bg-[radial-gradient(40%_60%_at_50%_50%,rgba(16,185,129,.22),transparent_60%)] animate-[blob_10s_ease-in-out_infinite]" />
+                  <div className="absolute inset-[-20%] rounded-[inherit] bg-[conic-gradient(from_0deg,rgba(16,185,129,.0),rgba(16,185,129,.4),rgba(16,185,129,.0))] animate-[spin_8s_linear_infinite,glowPulse_3.2s_ease-in-out_infinite]" />
                 </div>
               </div>
-              <div className="relative rounded-lg border border-emerald-300/70 bg-white/95 backdrop-blur-sm flex items-end">
+              <div className="relative rounded-xl border border-emerald-300/70 bg-white/90 backdrop-blur-sm flex items-end overflow-hidden">
+                {/* Shimmer ring like full view */}
+                <div className="pointer-events-none absolute -inset-[1px] rounded-[inherit]" style={{ WebkitMask: 'linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)', WebkitMaskComposite: 'xor' as any, maskComposite: 'exclude' as any, padding: 1 }}>
+                  <div className="absolute -inset-1 rounded-[inherit] bg-[conic-gradient(from_0deg,transparent,rgba(16,185,129,.4),transparent)] animate-[spin_6s_linear_infinite]" />
+                </div>
                 <textarea
                   value={inputValue}
                   onChange={(e) => setInputValue(e.target.value)}
                   placeholder="Tell cf0 AI what to build..."
-                  className="flex-1 bg-transparent border-none focus:outline-none focus:ring-0 px-2.5 py-1.5 text-[13px] resize-none min-h-[38px] max-h-28 overflow-y-auto"
-                  onKeyDown={(e) => {
+                  className="flex-1 bg-transparent border-none focus:outline-none focus:ring-0 px-2.5 py-1.5 text-[13px] resize-none min-h-[38px] max-h-28 overflow-y-auto placeholder:text-gray-400"
+               onKeyDown={(e) => {
+                if (e.key === '@') {
+                  setShowSourcesDropdown(true)
+                  setSourceMenuOrigin('inline')
+                }
                     if (e.key === 'Enter' && !e.shiftKey) {
                       e.preventDefault()
                       handleSendMessage()
@@ -779,33 +809,10 @@ export function ChatInterface() {
                     target.style.height = Math.min(target.scrollHeight, 112) + 'px'
                   }}
                 />
-                {/* Agent mode mini selector */}
-                <div className="absolute -top-6 left-0 flex items-center gap-1">
-                  <span className="text-[9px] text-gray-600">Mode</span>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-5 px-1.5 text-[10px]"
-                    onClick={(e) => { e.stopPropagation(); setShowModeDropdown(prev => !prev) }}
-                  >
-                    {mode === 'ask' ? (
-                      <>
-                        <Sparkles className="w-3 h-3" />
-                        Ask
-                      </>
-                    ) : (
-                      <>
-                        <Wrench className="w-3 h-3" />
-                        Analyst
-                      </>
-                    )}
-                    <ChevronDown className="w-2.5 h-2.5 ml-1" />
-                  </Button>
-                </div>
                 <Button
                   onClick={handleSendMessage}
                   size="icon"
-                  className="m-1 size-7 bg-gradient-to-r from-emerald-600 to-emerald-500 text-white"
+                  className="relative m-1 h-7 w-7 bg-gradient-to-r from-emerald-600 to-emerald-500 text-white"
                   disabled={!inputValue.trim() || isProcessing}
                 >
                   <Send className="w-3 h-3" />
@@ -836,11 +843,8 @@ export function ChatInterface() {
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b bg-transparent rounded-tl-2xl">
         <div className="flex items-center gap-2">
-          <div className="w-6 h-6 bg-black rounded flex items-center justify-center">
-            <span className="text-white text-xs font-bold">cf0</span>
-          </div>
-          <span className="font-medium text-sm">AI</span>
-          <span className="ml-2 text-[11px] text-gray-500">Excel Copilot</span>
+          <Image src={invertedLogo} alt="cf0" width={32} height={32} className="rounded" />
+          <span className="text-[12px] font-medium text-gray-800 select-none">cf0.ai</span>
         </div>
         
         {/* Tiny model selector */}
@@ -849,7 +853,7 @@ export function ChatInterface() {
             <Button variant="outline" size="sm" className="group relative h-6 px-2 text-[10px] hover:bg-gray-50 overflow-hidden transition-colors duration-300" onClick={() => { setShowModelMenu(prev => !prev); setShowProviderMenu(false) }}>
               {/* animated glow ring */}
               <span className="pointer-events-none absolute inset-0 rounded-md" style={{ WebkitMask: 'linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)', WebkitMaskComposite: 'xor' as any, maskComposite: 'exclude' as any, padding: 1 }}>
-                <span className="absolute -inset-1 rounded-md bg-[conic-gradient(from_0deg,rgba(16,185,129,.0),rgba(16,185,129,.7),rgba(16,185,129,.0))] animate-[spin_3.5s_linear_infinite] opacity-80 group-hover:opacity-90 transition-opacity duration-300" />
+                <span className="absolute inset-0 rounded-md bg-[conic-gradient(from_0deg,rgba(16,185,129,.0),rgba(16,185,129,.7),rgba(16,185,129,.0))] animate-[spin_3.5s_linear_infinite] opacity-80 group-hover:opacity-90 transition-opacity duration-300" />
               </span>
               <span className="relative z-10 flex items-center">
                 <span className="text-emerald-700 font-medium">{model}</span>
@@ -903,22 +907,22 @@ export function ChatInterface() {
         <div className="flex bg-gray-100/70 rounded-md p-0.5 border border-gray-200/60">
           <button
             onClick={() => setActiveTab('chat')}
-            className={`px-3 py-1.5 text-[12px] font-medium rounded-[8px] transition-all duration-150 hover:bg-white/80 ${
+            className={`px-3 py-1.5 text-[12px] font-medium rounded-[8px] transition-all duration-200 hover:bg-emerald-50 hover:text-emerald-800 ${
               activeTab === 'chat' 
-                ? 'bg-white text-gray-900 shadow-xs' 
+                ? 'bg-white text-gray-900 shadow-xs ring-1 ring-emerald-300' 
                 : 'text-gray-600 hover:text-gray-900'
-            }`}
+            } hover:translate-y-[-1px]`}
           >
             Chat
           </button>
           {messages.some(msg => msg.type === 'user' && messages.length > 1) && auditData.length > 0 && (
             <button
               onClick={() => setActiveTab('audit')}
-              className={`ml-0.5 px-3 py-1.5 text-[12px] font-medium rounded-[8px] transition-all duration-150 hover:bg-white/80 ${
+              className={`ml-0.5 px-3 py-1.5 text-[12px] font-medium rounded-[8px] transition-all duration-200 hover:bg-emerald-50 hover:text-emerald-800 ${
                 activeTab === 'audit' 
-                  ? 'bg-white text-gray-900 shadow-xs' 
+                  ? 'bg-white text-gray-900 shadow-xs ring-1 ring-emerald-300' 
                   : 'text-gray-600 hover:text-gray-900'
-              }`}
+              } hover:translate-y-[-1px]`}
             >
               Audit
             </button>
@@ -1010,8 +1014,10 @@ export function ChatInterface() {
                           {/* no bubble background — use underline card style */}
                           <div className="relative px-0 py-0 text-[13px] leading-6 text-gray-900">
                             <div className="relative">
-                              <div className="absolute -inset-x-1 -bottom-1 h-[2px] bg-emerald-400/70 rounded-full blur-[1px]" />
-                              <div className="absolute -inset-x-1 -bottom-[6px] h-[1px] bg-emerald-200/80" />
+                              {/* subtle bubble background */}
+                              <div className="absolute inset-[-6px] rounded-lg bg-emerald-50/30 border border-emerald-100" />
+                              <div className="absolute -inset-x-1 -bottom-1 h-[2px] bg-emerald-400/60 rounded-full blur-[1px]" />
+                              <div className="absolute -inset-x-1 -bottom-[6px] h-[1px] bg-emerald-200/70" />
                               <span className="bg-gradient-to-r from-gray-900 to-gray-700 bg-clip-text text-transparent font-medium">
                                 {message.content}
                               </span>
@@ -1025,9 +1031,10 @@ export function ChatInterface() {
                         </div>
                       </div>
                     ) : (
-                      <div className="space-y-1.5 relative animate-in slide-in-from-right-2 duration-200 group">
-                        <div className="flex items-center gap-1.5 text-[12px] font-medium text-gray-600 relative">
-                          <div className="absolute -top-5 left-10 w-px h-5 bg-emerald-400"></div>
+                      <div className="space-y-1.5 relative animate-in slide-in-from-right-2 duration-200 group pl-6">
+                        {/* connecting line in a dedicated gutter to avoid cutting through text */}
+                        <div className="pointer-events-none absolute left-3 -top-3 bottom-0 w-[2px] bg-gradient-to-b from-emerald-300 via-emerald-400 to-emerald-300 rounded-full -z-10" />
+                        <div className="flex items-center gap-1.5 text-[12px] font-medium text-gray-600 relative z-0 pr-2 inline-flex rounded">
                           {message.content === 'Thinking...' ? (
                             <>
                               <Brain className="w-3.5 h-3.5 text-emerald-600 animate-pulse" /> Thinking
@@ -1042,8 +1049,16 @@ export function ChatInterface() {
                             </>
                           )}
                         </div>
-                        <div className="flex items-start gap-2 max-w-[72%]">
-                          <div className="w-6 h-6 rounded-full bg-black text-white flex items-center justify-center text-[9px]">AI</div>
+                        <div className="flex items-start gap-2 w-[min(900px,calc(var(--panel-width,480px)-120px))] max-w-full">
+                          {/* Show logo only for the first system message after a user message */}
+                          {(() => {
+                            // find previous message; if previous is user or none, show logo
+                            // This is a render-time heuristic using current list; safe for demo
+                            const idx = messages.findIndex(m => m.id === message.id)
+                            const prev = idx > 0 ? messages[idx - 1] : undefined
+                            const showLogo = !prev || prev.type === 'user'
+                            return showLogo ? <Image src={invertedLogo} alt="cf0" width={32} height={32} className="rounded" /> : <div className="w-8" />
+                          })()}
                           {message.meta?.kind === 'thinking' ? (
                             <div className="bg-gray-100 p-2.5 rounded-lg border border-gray-200 max-w-md">
                               <div className="animate-pulse space-y-2">
@@ -1053,7 +1068,7 @@ export function ChatInterface() {
                               </div>
                             </div>
                           ) : message.meta?.kind === 'thought-summary' ? (
-                            <div className="px-3 py-2 rounded-lg border border-emerald-200 bg-emerald-50/70 max-w-md text-[13px] leading-5 text-gray-800 w-full">
+                            <div className="px-2 py-1 text-[13px] leading-5 text-gray-800 w-full">
                               <div className="flex items-center justify-between">
                                 <div className="flex items-center gap-2 text-emerald-700">
                                   <Brain className="w-3.5 h-3.5" />
@@ -1068,18 +1083,32 @@ export function ChatInterface() {
                                 </button>
                               </div>
                               {message.meta.open && (
-                                <div className="mt-2 text-[12px] text-gray-700 space-y-1">
-                                  {message.meta.logs?.map((log, i) => (
-                                    <div key={i} className="flex items-start gap-2">
-                                      <span className="mt-[3px] w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                                      <span>{log}</span>
-                                    </div>
-                                  ))}
+                                <div className="mt-2 text-[12px] text-gray-700">
+                                  <div className="font-medium text-gray-800 mb-1">Internal reasoning</div>
+                                  <div className="relative">
+                                    <pre className="whitespace-pre-wrap leading-5 text-gray-800 max-h-48 overflow-auto pr-2 animate-in fade-in" style={{ WebkitMaskImage: 'linear-gradient(to bottom, transparent 0, black 12px, black calc(100% - 12px), transparent 100%)' }}>
+Parsed request and identified key objectives
+Built stepwise plan with financial assumptions
+Validated dependencies and calculated outputs
+Checked input constraints and data ranges for realism
+Mapped proposed changes to concrete spreadsheet operations
+Verified formula graph for circular references and errors
+Estimated the impact of formatting on readability and review
+Outlined revert points to preserve auditability
+Allocated steps between template generation and validation
+Re-reviewed assumptions against industry benchmarks
+Refined the sequence to minimize recalculation churn
+Prepared a user-facing summary detailing the plan and tradeoffs
+Queued secondary enhancements (naming, comments, protections)
+Completed dry-run and confirmed no destructive operations needed
+Ready to proceed with execution once approved
+                                    </pre>
+                                  </div>
                                 </div>
                               )}
                             </div>
                           ) : (
-                            <div className="px-3 py-2 rounded-lg border border-emerald-200 bg-emerald-50/70 max-w-md text-[13px] leading-5 text-gray-800">
+                            <div className="text-[13px] leading-6 text-gray-800 w-full">
                               {message.content}
                             </div>
                           )}
@@ -1096,13 +1125,16 @@ export function ChatInterface() {
             ) : (
               <div className="space-y-4 animate-in fade-in duration-500">
                 <div className="flex items-center justify-between mb-4">
-                  <div className="text-lg font-semibold text-gray-800">Audit Trail - Tool Execution Details</div>
+                  <div className="text-lg font-semibold text-gray-800 flex items-center gap-2">
+                    <Image src={invertedLogo} alt="cf0" width={20} height={20} className="rounded" />
+                    Audit Trail — Tool Execution Details
+                  </div>
                   <Button
                     variant="outline"
                     size="sm"
                     onClick={() => setIsAdvancedMode(!isAdvancedMode)}
                     className={`flex items-center gap-2 hover:scale-105 transition-all duration-200 ${
-                      isAdvancedMode ? 'bg-blue-50 border-blue-300 text-blue-700' : ''
+                      isAdvancedMode ? 'bg-emerald-50 border-emerald-300 text-emerald-700' : ''
                     }`}
                   >
                     <Settings className="w-3 h-3" />
@@ -1112,7 +1144,7 @@ export function ChatInterface() {
                 
                 {auditData.length > 0 ? (
                   auditData.map((item, index) => (
-                    <div key={item.id} className="border rounded-lg bg-white shadow-sm animate-in slide-in-from-bottom-2 duration-300" style={{animationDelay: `${index * 100}ms`}}>
+                    <div key={item.id} className="border rounded-lg bg-white shadow-sm animate-in slide-in-from-bottom-2 duration-300 border-emerald-100" style={{animationDelay: `${index * 100}ms`}}>
                       {/* Main Tool Header */}
                       <div className="p-4 border-b">
                         <div className="flex items-start justify-between mb-3">
@@ -1182,7 +1214,7 @@ export function ChatInterface() {
 
                       {/* Expanded Details */}
                       {expandedSections[item.id] && (
-                        <div className="p-4 bg-gray-50 animate-in slide-in-from-top-2 duration-300">
+                        <div className="p-4 bg-emerald-50/40 animate-in slide-in-from-top-2 duration-300">
                           {/* Formula Dependencies */}
                           {isAdvancedMode && item.formulas && item.formulas.length > 0 && (
                             <div className="mb-4">
@@ -1192,7 +1224,7 @@ export function ChatInterface() {
                               </h4>
                               <div className="space-y-2">
                                 {item.formulas.map((formula, idx) => (
-                                  <div key={idx} className="bg-white p-3 rounded border text-xs">
+                                  <div key={idx} className="bg-white p-3 rounded border border-emerald-100 text-xs">
                                     <div className="flex items-center justify-between mb-1">
                                       <span className="font-mono bg-blue-50 px-2 py-1 rounded text-blue-700">
                                         {formula.cell}
@@ -1218,7 +1250,7 @@ export function ChatInterface() {
 
                           {/* Detailed Steps */}
                           {item.detailedSteps && (
-                            <div className="mb-4">
+                               <div className="mb-4">
                               <h4 className="text-sm font-medium text-gray-800 mb-2 flex items-center gap-2">
                                 <FileText className="w-3 h-3" />
                                 Execution Steps
@@ -1228,7 +1260,7 @@ export function ChatInterface() {
                                   <div key={step.id} className={`flex items-center justify-between p-2 rounded border transition-all duration-200 ${
                                     stepApprovals[step.id] === 'approved' ? 'bg-green-50 border-green-200' :
                                     stepApprovals[step.id] === 'rejected' ? 'bg-red-50 border-red-200' :
-                                    'bg-white border-gray-200 hover:border-gray-300'
+                                    'bg-white border-emerald-100 hover:border-emerald-200'
                                   }`}>
                                     <div className="flex items-start gap-2 flex-1">
                                       <span className={`rounded-full w-5 h-5 flex items-center justify-center text-xs font-medium flex-shrink-0 mt-0.5 transition-colors duration-200 ${
@@ -1386,14 +1418,14 @@ export function ChatInterface() {
         <div className="flex items-center gap-2 mb-3">
           {/* Attach menu trigger */}
           <div className="relative">
-            <Button variant="ghost" size="icon" className="group size-6 hover:bg-emerald-50 text-emerald-700 transition-all duration-150" onClick={() => setShowSourcesDropdown(!showSourcesDropdown)} title="Attach (@)">
+            <Button variant="ghost" size="icon" className="group size-6 hover:bg-emerald-50 text-emerald-700 transition-all duration-150" onClick={() => { setShowSourcesDropdown(!showSourcesDropdown); setSourceMenuOrigin('button') }} title="Attach (@)">
               <AtSign className="draw-on-hover w-3 h-3" />
             </Button>
             {uploadedFiles.length > 0 && (
               <span className="absolute -top-1 -right-1 bg-blue-500 text-white text-[10px] rounded-full w-4 h-4 flex items-center justify-center">{uploadedFiles.length}</span>
             )}
-            {showSourcesDropdown && (
-              <div className="absolute top-full left-0 mt-1 bg-white border border-emerald-200 rounded-md shadow-md z-10 w-40 animate-in fade-in duration-150">
+            {showSourcesDropdown && sourceMenuOrigin === 'button' && (
+              <div className="absolute top-full left-0 mt-1 bg-white border border-emerald-200 rounded-md shadow-md z-20 w-40 animate-in fade-in slide-in-from-top-2 duration-200">
                 <div className="py-1 text-[10px]">
                   <button className="w-full text-left px-2 py-1 hover:bg-emerald-50 flex items-center gap-1.5 text-emerald-700" onClick={() => fileInputRef.current?.click()}>
                     <File className="draw-on-hover w-3 h-3" /> External
@@ -1442,15 +1474,18 @@ export function ChatInterface() {
             </Button>
             
             {showModeDropdown && (
-              <div className="absolute top-full right-0 mt-1 bg-white border rounded-md shadow-md z-10 animate-in slide-in-from-top-2 duration-200 w-36">
+              <div className="absolute top-full right-0 mt-1 bg-white border rounded-md shadow-md z-10 animate-in slide-in-from-top-2 duration-200 w-40">
                 <button
                   onClick={() => {
                     setMode('ask')
                     setShowModeDropdown(false)
                   }}
-                  className="flex w-full items-center gap-1.5 px-2 py-1 text-left text-[10px] hover:bg-gray-50 transition-colors duration-150"
+                  className={`relative flex w-full items-center gap-1.5 px-2 py-1 text-left text-[10px] hover:bg-gray-50 transition-colors duration-150 ${mode === 'ask' ? 'text-emerald-700 font-semibold' : 'text-gray-700'}`}
                 >
-                  <Sparkles className="w-3 h-3" />
+                  <span className="relative">
+                    <Sparkles className="w-3 h-3" />
+                    {mode === 'ask' && <span className="pointer-events-none absolute -inset-1 rounded bg-emerald-200/25 blur-[6px]" />}
+                  </span>
                   Ask
                 </button>
                 <button
@@ -1458,9 +1493,12 @@ export function ChatInterface() {
                     setMode('analyst')
                     setShowModeDropdown(false)
                   }}
-                  className="flex w-full items-center gap-1.5 px-2 py-1 text-left text-[10px] hover:bg-gray-50 transition-colors duration-150"
+                  className={`relative flex w-full items-center gap-1.5 px-2 py-1 text-left text-[10px] hover:bg-gray-50 transition-colors duration-150 ${mode === 'analyst' ? 'text-emerald-700 font-semibold' : 'text-gray-700'}`}
                 >
-                  <Wrench className="w-3 h-3" />
+                  <span className="relative">
+                    <Wrench className="w-3 h-3" />
+                    {mode === 'analyst' && <span className="pointer-events-none absolute -inset-1 rounded bg-emerald-200/25 blur-[6px]" />}
+                  </span>
                   Analyst
                 </button>
               </div>
@@ -1505,6 +1543,18 @@ export function ChatInterface() {
                 target.style.height = Math.min(target.scrollHeight, 160) + 'px'
               }}
             />
+            {showSourcesDropdown && sourceMenuOrigin === 'inline' && (
+              <div className="absolute left-2 bottom-[calc(100%+6px)] bg-white border border-emerald-200 rounded-md shadow-md z-20 w-44 animate-in fade-in slide-in-from-bottom-2 duration-200">
+                <div className="py-1 text-[10px]">
+                  <button className="w-full text-left px-2 py-1 hover:bg-emerald-50 flex items-center gap-1.5 text-emerald-700" onClick={() => fileInputRef.current?.click()}>
+                    <File className="draw-on-hover w-3 h-3" /> External
+                  </button>
+                  <button className="w-full text-left px-2 py-1 hover:bg-emerald-50 flex items-center gap-1.5 text-emerald-700" onClick={addMockRange}>
+                    <BoxSelect className="draw-on-hover w-3 h-3" /> Range
+                  </button>
+                </div>
+              </div>
+            )}
             <Button
               onClick={handleSendMessage}
               size="icon"
